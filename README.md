@@ -118,7 +118,9 @@ by searching around your location rather than around the station.
 - `Panel.qml` — fetches and renders. One `bbox` query to the METAR endpoint
   returns the nearest reporting field *and* its neighbours, so resolving the
   station costs nothing over filling the Nearby tab; a second call fetches the
-  TAF for whichever station won.
+  TAF for whichever station won. When nothing is stored the location is taken
+  from the same IP lookup the built-in weather widget uses, so the panel works
+  on the auto-detected location too, not only on one set by hand.
 - `metar.js` — every rule: categories, ceilings, the shapes visibility arrives
   in, wind barbs, weather codes, density altitude, TAF periods. Deliberately
   free of Qt types so it can be tested under node.
@@ -167,7 +169,9 @@ leaves the panel completely still.
 Observations and forecasts come from the **NOAA / NWS Aviation Weather Center**
 (`aviationweather.gov`), which requires no key. Location names, when your weather
 widget stores only a name, are resolved through Open-Meteo's geocoding API — the
-same service the built-in weather panel uses.
+same service the built-in weather panel uses. When no location is stored at all,
+the panel falls back to `wttr.in`, the same service behind the widget's own
+IP-based location command.
 
 **This is not a flight-planning tool.** It is a status pill for a desktop bar.
 It has no currency guarantee, no NOTAMs, no AIRMETs or SIGMETs, and no

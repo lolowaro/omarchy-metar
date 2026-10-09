@@ -98,8 +98,11 @@ Panel {
   // Coalesce bursts of writes into one read.
   Timer { id: weatherReadTimer; interval: 250; onTriggered: weatherReader.running = true }
 
-  // The first read can race shell startup, the same way the weather widget's does.
-  Timer { interval: 1500; running: true; onTriggered: weatherReader.running = true }
+  // The first read can race shell startup, the same way the weather widget's
+  // does. Settings arrive after Component.onCompleted, so the location may only
+  // be classifiable — file, own coords, or IP — by the time this fires; a
+  // refresh here is what starts the IP lookup when nothing else is known.
+  Timer { interval: 1500; running: true; onTriggered: { weatherReader.running = true; root.refresh() } }
 
   // Opening with O_NOFOLLOW and O_NONBLOCK means a symlink cannot redirect the
   // read and a planted FIFO cannot block it, and every check below is made
@@ -148,13 +151,30 @@ Panel {
   readonly property double weatherLon: parseFloat(String(weatherLocation.longitude))
   readonly property bool weatherHasCoords: isFinite(weatherLat) && isFinite(weatherLon)
 
-  readonly property double siteLat: hasOwnCoords ? ownLat : (weatherHasCoords ? weatherLat : geocodedLat)
-  readonly property double siteLon: hasOwnCoords ? ownLon : (weatherHasCoords ? weatherLon : geocodedLon)
+  // The built-in weather widget falls back to IP detection when no location is
+  // stored, so the panel has to as well; otherwise, with an empty weather.json,
+  // nothing resolves and no airfield is ever picked. The name the widget itself
+  // would show is IP-derived, and for it wttr.in also hands back exact
+  // coordinates for the request's own address — used directly, so a place with
+  // homonyms ("Saint-Denis") cannot be geocoded to the wrong continent.
+  property double ipLat: NaN
+  property double ipLon: NaN
+  property bool ipDone: false
+  readonly property bool ipHasCoords: isFinite(ipLat) && isFinite(ipLon) &&
+                                      Math.abs(ipLat) <= 90 && Math.abs(ipLon) <= 180
+
+  readonly property double siteLat: hasOwnCoords ? ownLat : (weatherHasCoords ? weatherLat : (ipHasCoords ? ipLat : geocodedLat))
+  readonly property double siteLon: hasOwnCoords ? ownLon : (weatherHasCoords ? weatherLon : (ipHasCoords ? ipLon : geocodedLon))
   readonly property bool hasSite: isFinite(siteLat) && isFinite(siteLon)
   readonly property bool needsGeocode: !hasOwnCoords && !weatherHasCoords && weatherName !== ""
+  // Only when the file is absent and no station is named — the same situation
+  // in which the built-in widget would itself be running an IP lookup.
+  readonly property bool needsIpLocation: !hasOwnCoords && !weatherHasCoords &&
+                                          weatherName === "" && wantedStation === ""
 
   onNeedsGeocodeChanged: if (needsGeocode) fetchGeocode()
   onWeatherNameChanged: if (needsGeocode) fetchGeocode()
+  onNeedsIpLocationChanged: if (needsIpLocation) fetchIpLocation()
 
   Process {
     id: geocodeProc
@@ -177,6 +197,32 @@ Panel {
             // Remember which name these came from, so a later rename refetches
             // and a failed lookup is not mistaken for a good one.
             root.geocodedFor = forName
+          }
+        } catch (e) { /* leave the location unresolved */ }
+      }
+    }
+  }
+
+  // Ask wttr.in, the same service the built-in widget's location command uses,
+  // where this connection is. Its `j1` payload carries the nearest area's own
+  // coordinates, so no second geocode and no homonym risk.
+  Process {
+    id: ipProc
+    command: ["true"]              // replaced in fetchIpLocation()
+    onExited: root.startPending(4)
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        if (!root.fresh(4)) return
+        try {
+          var d = root.parseBounded(text)
+          var area = d && d.nearest_area && d.nearest_area.length ? d.nearest_area[0] : null
+          var lat = area ? parseFloat(area.latitude) : NaN
+          var lon = area ? parseFloat(area.longitude) : NaN
+          if (isFinite(lat) && isFinite(lon)) {
+            root.ipLat = lat
+            root.ipLon = lon
+            root.ipDone = true
           }
         } catch (e) { /* leave the location unresolved */ }
       }
@@ -404,14 +450,14 @@ Panel {
   // request's checks. So a replacement is queued and started from onExited,
   // by which point the old collector has already run and been rejected.
   property int fetchGen: 0
-  property var procGen: [-1, -1, -1, -1]        // station, box, taf, geocode
-  property var requestKey: ["", "", "", ""]
-  property var pendingCmd: [null, null, null, null]
-  property var pendingKey: ["", "", "", ""]
+  property var procGen: [-1, -1, -1, -1, -1]    // station, box, taf, geocode, ip
+  property var requestKey: ["", "", "", "", ""]
+  property var pendingCmd: [null, null, null, null, null]
+  property var pendingKey: ["", "", "", "", ""]
 
-  readonly property var guardedProcs: [stationProc, boxProc, tafProc, geocodeProc, weatherReader]
-  readonly property var guardLimits: [15, 20, 15, 8, 4]
-  property var guardStarted: [0, 0, 0, 0, 0]
+  readonly property var guardedProcs: [stationProc, boxProc, tafProc, geocodeProc, ipProc, weatherReader]
+  readonly property var guardLimits: [15, 20, 15, 8, 6, 4]
+  property var guardStarted: [0, 0, 0, 0, 0, 0]
 
   function procAt(i) { return guardedProcs[i] }
 
@@ -465,7 +511,10 @@ Panel {
       return
     }
     var box = bboxString()
-    if (box === "") return          // no location resolved yet; onHasSiteChanged retries
+    if (box === "") {               // no location resolved yet; onHasSiteChanged retries
+      if (needsIpLocation) fetchIpLocation()
+      return
+    }
     loading = true
     launch(1, curlTo(api + "metar?bbox=" + box + "&format=json", 20), box)
   }
@@ -485,6 +534,13 @@ Panel {
     launch(3, curlTo("https://geocoding-api.open-meteo.com/v1/search?name="
                      + encodeURIComponent(weatherName) + "&count=1&language=en&format=json", 8),
            weatherName)
+  }
+
+  // A failed lookup leaves ipDone false, so the ten-minute refresh timer retries
+  // without any bespoke backoff; a running one is simply not started twice.
+  function fetchIpLocation() {
+    if (ipDone || !needsIpLocation || ipProc.running) return
+    launch(4, curlTo("https://wttr.in/?format=j1", 6), "ip")
   }
 
   Component.onCompleted: refresh()
