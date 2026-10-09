@@ -92,7 +92,7 @@ station ""` goes back to picking the nearest field automatically.
 |---|---|---|
 | Station | `station` | ICAO code, e.g. `KSFO`. Blank picks the nearest reporting field |
 | Latitude / longitude | `latitude`, `longitude` | Override the location. Blank inherits your Omarchy weather location |
-| Bar pill shows | `pillContent` | `category`, `station`, `both` or `wind` |
+| Bar pill shows | `pillContent` | `category`, `icon`, `station`, `both` or `wind` |
 | Times | `timeFormat` | `local` or `zulu` |
 | Temperature | `temperature` | `C` or `F` |
 | Default tab | `defaultTab` | `now`, `forecast`, `nearby` or `raw` |

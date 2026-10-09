@@ -247,13 +247,17 @@ Panel {
     }
     return String(Color.muted)
   }
-  readonly property string categoryColor: category !== "" && !stale ? colorFor(category) : ""
+  // Icon-only mode carries no state in the pill, so it also drops the colour:
+  // BarWidget then falls back to the bar's own foreground. The popup still uses
+  // colorFor() and stays categorised.
+  readonly property string categoryColor: category !== "" && !stale && pillContent !== "icon" ? colorFor(category) : ""
 
   // ---- Bar pill ---------------------------------------------------------
   readonly property string label: safeBare(rawLabel, 48)
 
   readonly property string rawLabel: {
     if (!obs) return glyph
+    if (pillContent === "icon") return glyph
     if (pillContent === "station") return glyph + "  " + safeBare(stationId, 6)
     if (pillContent === "both") return glyph + "  " + safeBare(stationId, 6) + " " + category
     if (pillContent === "wind") {
